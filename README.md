@@ -77,7 +77,7 @@ USB 小尾巴、通过 USB 连接的主板板载声卡和外置解码器都可�
 
 更新时在原目录替换 EXE。移动程序时请一并保留同级 `uac2-data`，其中有本机设备首次修改前的恢复快照，以及当前账户的风险同意和游戏目录。遇到问题，选中出问题的输出，打开右上角「诊断探针」生成报告。先查看 `uac2-data/diagnostics/latest.json`，再手动附到 Issue，并注明声卡型号、设备格式、目标周期、修改范围和界面提示。只需附这份报告，私人偏好与恢复快照留在本机。[反馈问题](https://github.com/yosuzu/uac2-wasapi-shared-lowlatency/issues/new)
 
-项目署名 **UAC2 Control Project**，主要代码由 **OpenAI Codex（GPT-6.2 Astra）** 实现。程序使用 Rust，界面由 WebView2 显示。端点探测、Windows 即插即用设备枚举和 USB 端口重连沿用了 ZH3 Control 的部分代码。两款工具各自维护，ZH3 Control 面向 Fosi 厂商驱动，本工具面向微软 USB Audio 2.0 驱动。[ZH3 Control](https://github.com/yosuzu/zh3-wasapi-shared-lowlatency)
+项目署名 **UAC2 Control Project**。**yosuzu** 提出需求并进行实机测试，主要代码由 **OpenAI Codex（GPT-6.2 Astra）** 实现。程序使用 Rust，界面由 WebView2 显示。端点探测、Windows 即插即用设备枚举和 USB 端口重连沿用了 ZH3 Control 的部分代码。两款工具各自维护，ZH3 Control 面向 Fosi 厂商驱动，本工具面向微软 USB Audio 2.0 驱动。[ZH3 Control](https://github.com/yosuzu/zh3-wasapi-shared-lowlatency)
 
 自 0.2.1 起，项目自有代码、说明及原创图标采用 **PolyForm Noncommercial 1.0.0**，第三方组件按各自条款使用。转发给朋友时，可直接发送包含许可与署名的发行 ZIP。试流所需的 BASS 与 BASSWASAPI 由用户在本机提供。[许可全文](LICENSE) · [署名及第三方声明](THIRD-PARTY-NOTICES.txt) · [BASS 使用许可](https://www.un4seen.com/bass.html#license)
 
