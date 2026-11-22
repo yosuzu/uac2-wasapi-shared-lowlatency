@@ -1,5 +1,6 @@
 mod audio;
 mod pnp;
+pub(crate) use pnp::card_audio_endpoints;
 
 use serde::{Deserialize, Serialize};
 

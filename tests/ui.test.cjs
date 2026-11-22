@@ -314,6 +314,8 @@ describe("Packaged UAC2 interface with a simulated native host", {concurrency: f
     assert.match(await content("modal"), /Fixture microphone/);
     assert.match(await content("modal"), /Fixture USB Audio/);
     assert.match(await content("modal"), /USB 端口/);
+    assert.match(await content("modal"), /退出.*应用/);
+    assert.match(await content("modal"), /快照/);
     assert.equal(await dialogButton("取消").evaluate(n => n === document.activeElement), true);
     await devices([{...headphones, arrival: "12"}, speakers], headphones.id, true);
     assert.equal(await visible("modal"), false);
@@ -338,9 +340,76 @@ describe("Packaged UAC2 interface with a simulated native host", {concurrency: f
     assert.equal(await node("restore").isDisabled(),true);
     await devices([damaged],damaged.id,true);
     await click("force");
+    assert.match(await content("modal"),/quit.*apps/i);
+    assert.match(await content("modal"),/snapshot/i);
     await dialogButton("Confirm force restore").click();
     assert.equal((await latest()).op,"force");
     assert.equal((await latest()).device.id,damaged.id);
+  });
+
+  async function forceRestore() {
+    await click("force");
+    await dialogButton("Confirm force restore").click();
+    const request=await latest();
+    assert.equal(request.op,"force");
+    return {type:"operation",op:"force",id:request.device.id,requestId:request.requestId};
+  }
+
+  it("refreshes the verified rebuilt output and restores its new snapshot without another removal",async()=>{
+    const returned={...headphones,id:"new-headphones",snapshot:true};
+    await open(headphones.id,{lang:"en"});
+    const request=await forceRestore();
+    await emit({...request,requestId:request.requestId+1,ok:true,returnedId:speakers.id});
+    assert.equal((await latest()).op,"force");
+    await emit({...request,ok:true,returnedId:returned.id,snapshotStatus:"saved",message:"Snapshot saved"});
+    assert.deepEqual(await latest(),{op:"refresh",id:returned.id});
+    await devices([speakers,returned],returned.id);
+    assert.equal(await node("output").inputValue(),returned.id);
+    await click("restore");
+    await dialogButton("Restore factory defaults").click();
+    assert.equal((await latest()).op,"restore");
+    assert.equal((await latest()).device.id,returned.id);
+    assert.equal(await sends("force"),1);
+  });
+
+  it("keeps an unusable existing snapshot disabled until a later operation verifies it",async()=>{
+    const existing={...headphones,snapshot:true};
+    await open(existing.id,{lang:"en"},[existing,speakers]);
+    const request=await forceRestore();
+    await emit({...request,ok:true,returnedId:headphones.id,snapshotStatus:"unavailable",message:"Output rebuilt. Snapshot could not be verified."});
+    await devices([existing,speakers],existing.id);
+    assert.match(await content("notice"),/Output rebuilt/);
+    assert.equal(await node("restore").isDisabled(),true);
+    assert.match(await content("restore-help"),/diagnostic/i);
+    await click("refresh");
+    await devices([existing,speakers],existing.id);
+    assert.equal(await node("restore").isDisabled(),true);
+    await click("apply");
+    await dialogButton("Apply settings").click();
+    const apply=await latest();
+    await emit({type:"operation",op:"apply",id:existing.id,requestId:apply.requestId,ok:true,message:"New settings verified"});
+    await devices([existing,speakers],existing.id);
+    assert.equal(await node("restore").isEnabled(),true);
+    assert.equal(await sends("force"),1);
+  });
+
+  it("retains the force failure during refresh and requires a new confirmation to retry",async()=>{
+    await open(headphones.id,{lang:"en"});
+    const request=await forceRestore();
+    const busy="The device was not removed. Stop playback and confirm again.";
+    await emit({...request,ok:false,message:busy});
+    assert.deepEqual(await latest(),{op:"refresh",id:headphones.id});
+    await devices(endpoints,headphones.id);
+    assert.match(await content("notice"),/Stop playback/);
+    assert.equal(await visible("modal"),false);
+    assert.equal(await sends("force"),1);
+    const retry=await forceRestore();
+    await emit({...retry,ok:false,message:"Removal returned 5. Check the output in Windows."});
+    await devices([speakers],"");
+    assert.equal(await node("output").inputValue(),"");
+    assert.match(await content("notice"),/Removal returned 5/);
+    assert.equal(await node("force").isDisabled(),true);
+    assert.equal(await sends("force"),2);
   });
 
   it("offers independent rebuild after a failed snapshot restore only for the same verified card",async()=>{

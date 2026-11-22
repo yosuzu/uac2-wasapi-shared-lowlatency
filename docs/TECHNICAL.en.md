@@ -2,7 +2,7 @@
 
 [中文版](TECHNICAL.md) · [English user guide](../README.en.md)
 
-This document describes version 0.2.2 for Windows x64. UAC2 Control changes the **minimum WASAPI shared-mode engine period** that Windows advertises for a playback output. An engine period is the time between batches of audio frames. Each frame contains one sample per channel. At 48 kHz, 480 frames represent 10 ms and 144 frames represent 3 ms. A lower minimum lets a client request shorter periods. A client that requests the default can still run at 480 frames.
+This document describes version 0.2.3 for Windows x64. UAC2 Control changes the **minimum WASAPI shared-mode engine period** that Windows advertises for a playback output. An engine period is the time between batches of audio frames. Each frame contains one sample per channel. At 48 kHz, 480 frames represent 10 ms and 144 frames represent 3 ms. A lower minimum lets a client request shorter periods. A client that requests the default can still run at 480 frames.
 
 | Reading | Source | What it tells you |
 | --- | --- | --- |
@@ -52,6 +52,14 @@ The public fixture allows an offline check that a 3 ms request selects three row
 | Force restore | After separate confirmation, Windows removes the selected USB audio function's device instance, keeps the driver package and rediscovers the function. If it fails to return, the tool may attempt one reconnection on the previously verified port. Audio on the card may stop, and the endpoint ID, volume or default output may change. | Matches the returning output by device, driver and connector. A new ID is accepted only if the connector can be uniquely matched both before and after the operation. The result reports separately whether the periods could be read. |
 
 Pause playback and lower the volume before restarting or reconnecting. Below 3 ms the interface also warns about dropouts, pops and silence. If WebView2 Runtime or its cache is unavailable, a native recovery window can select a verified audio function and obtain a second confirmation for force restore. Driver rejection, an ambiguous port or an offline device can prevent recovery. [Recovery implementation](../src/profile.rs) · [Port matching](../src/profile/port.rs) · [Native fallback](../src/emergency.rs)
+
+### Audio activity and snapshots during force restore
+
+After confirmation, the tool checks for playback and recording on the selected card. An active stream or an inconclusive check stops the operation before Windows removes the device. Muting a player can leave its stream running. Stop playback or recording, close the application if necessary, and confirm again for a fresh check. Another application can still open a stream after the check. [Windows audio session states](https://learn.microsoft.com/windows/win32/api/audiopolicy/nf-audiopolicy-iaudiosessioncontrol-getstate)
+
+Once Windows rediscovers the card, the tool checks the snapshot for the verified returning output. If that output has no snapshot, the tool checks its format, published periods, capability records and persisted copy, then saves the settings Windows rebuilt for use with ordinary restore. It preserves any original snapshot already on file. If the snapshot cannot be verified or saved, the result reports that separately from the device's return. [Recovery implementation](../src/profile.rs)
+
+If Windows returns `3010` during removal or the targeted device scan, restart Windows and refresh the device list. This code means the system requires a reboot to complete the operation. The tool stops at that step and preserves any existing snapshot. [Microsoft PnPUtil return values](https://learn.microsoft.com/windows-hardware/drivers/devtest/pnputil-return-values)
 
 ## Silent stream and queue estimate
 

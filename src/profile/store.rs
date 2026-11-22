@@ -109,7 +109,7 @@ pub(super) fn persisted(id: &str) -> Result<Vec<u8>> {
     read_binary(&path, PID2)?.ok_or("未找到所选端点能力的持久化副本。".into())
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct Snapshot {
     schema: u32,
     endpoint: String,
@@ -196,6 +196,17 @@ impl Snapshot {
             return Err("端点记录已由其他来源更改，无法覆盖。".into());
         }
         Ok(self.original.clone())
+    }
+    fn adopt_rebuilt(&mut self, current: &[u8]) -> Result<()> {
+        if !capability::same_except_minima(&self.original, current)? {
+            return Err(
+                "已保留现有快照。重建后的能力表与原件不兼容，暂时无法用该原件恢复。".into(),
+            );
+        }
+        self.before = current.to_vec();
+        self.intended = current.to_vec();
+        self.reload_pending = false;
+        Ok(())
     }
     fn validate(&self, e: &Endpoint) -> Result<()> {
         if self.schema != 1
@@ -438,6 +449,66 @@ pub(super) fn save(e: &Endpoint, s: &Snapshot) -> Result<()> {
     })
 }
 
+fn rebuilt_snapshot(
+    e: &Endpoint,
+    prior: Option<&Snapshot>,
+    current: Vec<u8>,
+    registry: Vec<u8>,
+) -> Result<Snapshot> {
+    capability::verify_persisted(&current, &registry)?;
+    let raw = super::check_format(e)?;
+    if capability::active(&current, &raw)? != super::range(e) {
+        return Err("重建后的能力记录与 Windows 公布范围尚未一致。".into());
+    }
+    match prior {
+        Some(s) => {
+            let mut existing = s.clone();
+            existing.adopt_rebuilt(&current)?;
+            Ok(existing)
+        }
+        None => Ok(Snapshot::new(e, current, registry)),
+    }
+}
+
+pub(super) enum RebuiltSnapshot {
+    Saved,
+    Preserved,
+}
+
+pub(super) fn save_rebuilt(
+    e: &Endpoint,
+    current: Vec<u8>,
+    registry: Vec<u8>,
+) -> Result<RebuiltSnapshot> {
+    let prior = load(e)?;
+    let status = if prior.is_some() {
+        RebuiltSnapshot::Preserved
+    } else {
+        RebuiltSnapshot::Saved
+    };
+    let snapshot = rebuilt_snapshot(e, prior.as_ref(), current, registry)?;
+    if prior.as_ref() == Some(&snapshot) {
+        return Ok(status);
+    }
+    let id = guid(&e.id)?;
+    let machine = data::machine()?;
+    data::update(Document::Recovery, |doc| {
+        let old = legacy(e)?;
+        let actual = match lookup(Some(doc), &id)? {
+            Some(record) => Some(verify_record(e, record, &machine, old.as_deref())?),
+            None => old.as_deref().map(|b| old_snapshot(e, b)).transpose()?,
+        };
+        if actual != prior {
+            return Err("保存前现有快照已变化，请重新核对本地恢复文件。".into());
+        }
+        merge_record(doc, e, &snapshot, &machine, old.as_deref())
+    })?;
+    if load(e)?.as_ref() != Some(&snapshot) {
+        return Err("本地快照写入后未通过独立读回校验。".into());
+    }
+    Ok(status)
+}
+
 fn revision() -> Result<Option<String>> {
     match data::read(Document::Recovery)? {
         Some(doc) => doc
@@ -598,6 +669,88 @@ pub(super) fn remove_verified_test_snapshot(e: &Endpoint, original: &[u8]) -> Re
 #[cfg(test)]
 mod portable_tests {
     use super::*;
+    #[test]
+    fn rebuilt_windows_defaults_reopen_for_restore_without_overwriting_an_earlier_original() {
+        let fixture: Vec<Value> =
+            serde_json::from_str(include_str!("fixtures/capabilities.json")).unwrap();
+        let bytes = |key: &str| capability::hex(fixture[0][key].as_str().unwrap()).unwrap();
+        let current = bytes("original");
+        let registry = bytes("persisted");
+        let mut custom = bytes("candidate");
+        let period = capability::active(&current, &bytes("format")).unwrap();
+        let e = Endpoint {
+            id: "{0.0.0.00000000}.{11111111-2222-3333-4444-555555555555}".into(),
+            physical_id: "card".into(),
+            function_id: "wave".into(),
+            container: "container".into(),
+            driver_version: "verified-driver".into(),
+            raw_format: fixture[0]["format"].as_str().unwrap().into(),
+            rate: fixture[0]["rate"].as_u64().unwrap() as u32,
+            mix_rate: fixture[0]["rate"].as_u64().unwrap() as u32,
+            channels: 2,
+            mix_channels: 2,
+            min: period.min,
+            default: period.default,
+            max: period.max,
+            fundamental: period.step,
+            ..Default::default()
+        };
+        let mut doc = Map::new();
+        let first = rebuilt_snapshot(&e, None, current.clone(), registry.clone()).unwrap();
+        merge_record(&mut doc, &e, &first, "machine", None).unwrap();
+        let record = lookup(Some(&doc), &guid(&e.id).unwrap()).unwrap().unwrap();
+        let reopened = verify_record(&e, record, "machine", None).unwrap();
+        assert_eq!(reopened.restore_from(&current).unwrap(), current);
+        assert!(!reopened.reload_pending);
+
+        let mut custom_registry = registry.clone();
+        custom_registry[8..].copy_from_slice(&custom);
+        let mut old = Snapshot::new(&e, custom.clone(), custom_registry.clone());
+        old.reload_pending = true;
+        assert!(old.restore_from(&current).is_err());
+        let reconciled =
+            rebuilt_snapshot(&e, Some(&old), current.clone(), registry.clone()).unwrap();
+        assert_eq!(reconciled.restore_from(&current).unwrap(), custom);
+        assert_eq!(reconciled.original_registry, custom_registry);
+        assert!(!reconciled.reload_pending);
+
+        // Windows may allocate a new endpoint ID after rebuilding.
+        let other = Endpoint {
+            id: "{0.0.0.00000000}.{21111111-2222-3333-4444-555555555555}".into(),
+            ..e.clone()
+        };
+        let next = rebuilt_snapshot(&other, None, current.clone(), registry.clone()).unwrap();
+        merge_record(&mut doc, &other, &next, "machine", None).unwrap();
+        assert_eq!(table(&doc).unwrap().unwrap().len(), 2);
+        assert!(verify_record(&other, record_for(&doc, &e), "machine", None).is_err());
+        assert!(verify_record(&e, record_for(&doc, &e), "machine", None).is_ok());
+        assert!(
+            verify_record(&other, record_for(&doc, &other), "machine", None)
+                .unwrap()
+                .restore_from(&current)
+                .is_ok()
+        );
+
+        // A legitimate-looking table for another format must never authorize
+        // restoration of the old journal, even with an intact registry wrapper.
+        custom[28 + 20 + 20] ^= 1; // WAVEFORMATEXTENSIBLE channel mask.
+        let mut other_registry = registry.clone();
+        other_registry[8..].copy_from_slice(&custom);
+        let unrelated = Snapshot::new(&e, custom, other_registry);
+        assert!(rebuilt_snapshot(&e, Some(&unrelated), current.clone(), registry.clone()).is_err());
+        let wrong_range = Endpoint {
+            min: period.min + 1,
+            ..e.clone()
+        };
+        assert!(rebuilt_snapshot(&wrong_range, None, current.clone(), registry.clone()).is_err());
+        let mut bad = registry;
+        *bad.last_mut().unwrap() ^= 1;
+        assert!(rebuilt_snapshot(&e, None, current, bad).is_err());
+    }
+
+    fn record_for<'a>(doc: &'a Map<String, Value>, e: &Endpoint) -> &'a Value {
+        lookup(Some(doc), &guid(&e.id).unwrap()).unwrap().unwrap()
+    }
     #[test]
     fn legacy_arrays_roundtrip_preserves_first_image_unknown_keys_and_device_binding() {
         let fixtures: Vec<Value> =

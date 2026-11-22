@@ -6,20 +6,20 @@
 
 USB 小尾巴、通过 USB 连接的主板板载声卡和外置解码器都可能适用。打开程序，选中你实际听声音的输出，看「驱动绑定」是否显示 **微软 UAC 2.0 已核对**。同一块声卡的耳机和 S/PDIF 数字输出可以分开选择。其他驱动的输出如果能读到完整的共享格式和周期，界面可提供「仅支持试流」；这条路径已有模拟测试，仍缺实机记录。
 
-**Windows x64 · 0.2.2**　[发行 ZIP（发布后可下载）](https://github.com/yosuzu/uac2-wasapi-shared-lowlatency/releases) · [维护者技术文档](docs/TECHNICAL.md)
+**Windows x64**　[下载最新版 ZIP 并查看 SHA-256 校验值](https://github.com/yosuzu/uac2-wasapi-shared-lowlatency/releases/latest) · [维护者技术文档](docs/TECHNICAL.md)
 
-0.2.2 的 EXE 未签名，下载后 Windows 可能显示未知发布者或 SmartScreen 提示。此版 ZIP 的 SHA-256 为 `112E5744333674CA7F3D06C5AD6F4E9D389FF8F9695CFF4F6B8B42E3559D746C`。[Microsoft SmartScreen 说明](https://learn.microsoft.com/windows/apps/package-and-deploy/smartscreen-reputation)
+如果 Windows 提示发布者未知或显示 SmartScreen 警告，可先核对下载的 ZIP 的 SHA-256 是否与同一发行页的校验值一致。[Microsoft SmartScreen 说明](https://learn.microsoft.com/windows/apps/package-and-deploy/smartscreen-reputation)
 
 ## 从选输出到看结果
 
-下面用 0.2.2 的界面演示如何给 Realtek S/PDIF 选择 2 ms 并验证。动图回放已有实机读数，试流结果取自 0.1.2 的 24 位／48 kHz 记录。后面三张声卡截图来自另一次后台有声音播放的实测。
+下面演示如何给 Realtek S/PDIF 选择 2 ms 并验证。动图回放的是早期版本在 24 位／48 kHz 下的实机试流记录。后面三张声卡截图来自另一次后台有声音播放的实测。
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/usage-zh.png">
   <img src="docs/images/usage-zh.gif" alt="选择 Realtek S/PDIF，将目标调到 2 ms，确认应用，查看 Windows 公布的下限，再从试流准备页手动开始并查看排队结果。">
 </picture>
 
-1. **启动。** 将 `UAC2-Control-0.2.2-windows-x64.zip` 解压到本机可写文件夹，运行 `UAC2-Control.exe`。主窗口使用 Microsoft Edge WebView2 Runtime，并请求管理员权限。首次启动会说明中断和爆音风险。选「否」会退出，下次仍会提示。[WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+1. **启动。** 将下载的 Windows x64 ZIP 解压到本机可写文件夹，运行 `UAC2-Control.exe`。主窗口使用 Microsoft Edge WebView2 Runtime，并请求管理员权限。首次启动会说明中断和爆音风险。选「否」会退出，下次仍会提示。[WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 2. **应用设置。** 选中输出，核对驱动、位深和采样率。先暂停播放、降低耳放或音箱音量，再调滑条，选「当前采样率」或「全部采样率」，点击「应用设置」并确认。前者可覆盖该采样率下已有的多个位深，后者涵盖这个输出在相同声道数下实际支持的常用采样率。设备重载可能中断同卡的播放和录音。
 3. **看 Windows 实读。** 设备回来后点「Windows 实读」旁的刷新按钮。「已公布下限」是应用可以请求的最短周期，「默认周期」是由 Windows 选取默认值时所用的周期，「当前周期」是读取这一刻引擎实际用的值。**下限变成 2 ms 后，当前仍可能是 10 ms**，直到有应用成功请求更短的周期。换位深或采样率后，窗口会自动更新。
 4. **想知道少等了多少，再点「试流验证」。** 手选 **osu!（lazer）安装目录**或其中的 `current` 文件夹。目录内需有 Un4seen 签名的 64 位 `bass.dll` 和 `basswasapi.dll`。只有再点「开始测试」，普通权限的助手才会开流。它发送全零音频，保留原有的系统音量、静音和已应用设置。调周期和刷新读数都无需游戏音频库。
@@ -69,17 +69,23 @@ USB 小尾巴、通过 USB 连接的主板板载声卡和外置解码器都可�
 
 | 遇到的情况 | 可以怎么做 |
 | --- | --- |
-| 想撤销本工具的调整 | 点「恢复原厂默认设置」。它写回**首次修改此输出前**保存的整份快照，包含该输出的各采样率。如果当时已有自定义设置，也会一并还原。 |
+| 想撤销本工具的调整 | 点「恢复原厂默认设置」，写回所选输出的整份快照，涵盖其中记录的各采样率。通常它保存的是本工具首次修改前的设置，包括当时已有的自定义值。如果快照是强制恢复后补存的，就会恢复到 Windows 当时重建的设置。 |
 | 提示设置已写入，但 Windows 尚未采用 | 核对界面显示的声卡和 USB 端口，再单独确认「硬重启」。它让这个端口断开并重连一次，随后重新读取设置。取消可稍后重试。 |
-| 快照丢失、损坏或无法匹配 | 红色「强制恢复」会单独确认，由 Windows 卸载已核对的 USB 音频功能、保留驱动包并重新识别。整块声卡会受影响，端点 ID、默认输出或音量可能变化。操作前暂停播放并降低音量，回来后核对实际输出。WebView2 无法启动时，原生应急窗口也可进入这项恢复。 |
+| 快照丢失、损坏或无法匹配 | 点红色「强制恢复」并单独确认。Windows 会卸载已核对的 USB 音频功能，保留驱动包，再重新识别声卡。整块声卡会受影响，输出的设备 ID、默认输出和音量都可能变化。WebView2 无法启动时，原生应急窗口也可执行强制恢复。 |
+
+**强制恢复前**，先降低音量，停止这块声卡上的播放和录音。确认后，工具会检查同卡的所有播放输出和录音输入。有任何一路被占用，操作就会在卸载前停止。若仍提示占用，退出使用声卡的应用，再确认一次。若提示无法核实状态，先刷新设备列表，再重新确认。
+
+**强制恢复期间如果看到 `3010`**，表示 Windows 已接受卸载或后续的设备扫描，需要重启电脑才能完成。工具会停在这一步并保留已有快照。先保存工作、重启 Windows，再刷新并核对所选输出。
+
+**声卡回来后**，先核对默认输出和音量，再恢复播放。工具会核对实际返回的输出、设备格式和 Windows 公布的周期。若该输出缺少快照，核对通过后会保存并读回重建后的默认设置，供下次普通恢复使用。若已有可核实的首次快照，会保留原件。如果结果提示「普通恢复快照未能就绪」，说明设备已经回来，但工具还无法确认有可用的快照。可在主窗口用「诊断探针」生成报告。
 
 ## 更新、反馈与署名
 
-更新时在原目录替换 EXE。移动程序时请一并保留同级 `uac2-data`，其中有本机设备首次修改前的恢复快照，以及当前账户的风险同意和游戏目录。遇到问题，选中出问题的输出，打开右上角「诊断探针」生成报告。先查看 `uac2-data/diagnostics/latest.json`，再手动附到 Issue，并注明声卡型号、设备格式、目标周期、修改范围和界面提示。只需附这份报告，私人偏好与恢复快照留在本机。[反馈问题](https://github.com/yosuzu/uac2-wasapi-shared-lowlatency/issues/new)
+更新时在原目录替换 EXE。移动程序时请一并保留同级 `uac2-data`，其中有本机设备的恢复快照，以及当前账户的风险同意和游戏目录。遇到问题，选中出问题的输出，打开右上角「诊断探针」生成报告。先查看 `uac2-data/diagnostics/latest.json`，再手动附到 Issue，并注明声卡型号、设备格式、目标周期、修改范围和界面提示。只需附这份报告，私人偏好与恢复快照留在本机。[反馈问题](https://github.com/yosuzu/uac2-wasapi-shared-lowlatency/issues/new)
 
 项目署名 **UAC2 Control Project**。**yosuzu** 提出需求并进行实机测试，主要代码由 **OpenAI Codex（GPT-6.2 Astra）** 实现。程序使用 Rust，界面由 WebView2 显示。端点探测、Windows 即插即用设备枚举和 USB 端口重连沿用了 ZH3 Control 的部分代码。两款工具各自维护，ZH3 Control 面向 Fosi 厂商驱动，本工具面向微软 USB Audio 2.0 驱动。[ZH3 Control](https://github.com/yosuzu/zh3-wasapi-shared-lowlatency)
 
-自 0.2.1 起，项目自有代码、说明及原创图标采用 **PolyForm Noncommercial 1.0.0**，第三方组件按各自条款使用。转发给朋友时，可直接发送包含许可与署名的发行 ZIP。试流所需的 BASS 与 BASSWASAPI 由用户在本机提供。[许可全文](LICENSE) · [署名及第三方声明](THIRD-PARTY-NOTICES.txt) · [BASS 使用许可](https://www.un4seen.com/bass.html#license)
+项目自有代码、说明及原创图标采用 **PolyForm Noncommercial 1.0.0**，第三方组件按各自条款使用。转发给朋友时，可直接发送包含许可与署名的发行 ZIP。试流所需的 BASS 与 BASSWASAPI 由用户在本机提供。[许可全文](LICENSE) · [署名及第三方声明](THIRD-PARTY-NOTICES.txt) · [BASS 使用许可](https://www.un4seen.com/bass.html#license)
 
 如果你觉得这个工具好用，欢迎录一段使用演示，或把项目链接分享到论坛、聊天群，让同样想改善音频延迟的人也能找到它。
 

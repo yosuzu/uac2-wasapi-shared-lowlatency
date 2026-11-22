@@ -19,6 +19,7 @@ const words = {
   missingRange:["无法完整核对此端点的周期能力记录。","The period capability records for this output could not be verified."],
   offerRebuild:["可由 Windows 重新识别这块声卡并重建默认设置。","Windows can rediscover this card and rebuild its default settings."],
   failedSnapshot:["写回快照未能完成。","Snapshot restoration did not complete."],
+  rebuiltWithoutSnapshot:["Windows 已重新识别此输出，暂时没有可写回的快照。请查看恢复结果，可用「诊断探针」生成报告。","Windows rediscovered this output. No snapshot is available to restore. Review the recovery result or use Diagnostic probe to generate a report."],
   app:["UAC2 共享周期","UAC2 Shared Period"],
   output:["播放输出","Playback output"], driver:["驱动绑定","Driver binding"], format:["设备格式","Device format"], mix:["共享混音","Shared mix"],
   supported:["微软 UAC 2.0 已核对","Microsoft UAC 2.0 verified"], unsupported:["不支持","Unsupported"], unknownDriver:["无法确认驱动","Driver unverified"],
@@ -57,8 +58,8 @@ const words = {
   yes:["是，继续使用","Yes, continue"], no:["否，退出","No, exit"], cancel:["取消","Cancel"], close:["关闭","Close"], hide:["返回主界面","Back to main window"],
   confirmApply:["确认应用设置","Apply these settings?"], confirmRestore:["确认恢复原厂默认设置","Restore factory defaults?"], confirmForce:["确认强制恢复","Confirm force restore"],
   applyText:["将为所选输出设置应用可请求的最小周期，保留对应格式原有的默认周期。请先暂停播放并降低音量，设备重启可能中断同卡音频或产生爆音。","Set the minimum period apps can request on this output and keep each format’s original default period. Pause playback and lower the volume. Restarting the device can interrupt other audio on this card or cause pops."],
-  restoreText:["将写回本工具首次修改此输出前保存的设置。该快照可能包含当时已有的自定义设置。请先暂停播放并降低音量，设备重启可能中断同卡音频或产生爆音。","Restore this output’s snapshot from before the first change made by this tool. It may include custom settings that were already present. Pause playback and lower the volume. Restarting the device can interrupt audio on this card or cause pops."],
-  forceText:["将卸载此声卡的 USB 音频设备实例，保留微软驱动包，再让 Windows 重新识别声卡并重建默认设置。如声卡未返回，将对已核对的 USB 端口尝试一次软件重连。同卡所有播放和录音端点都可能中断，重连可能产生爆音。Windows 可能切换默认输出或重置音量，必要时需重新插拔或重启电脑。请先暂停播放并降低音量。确认强制恢复吗？","Windows will remove this card’s USB audio device instance, keep the Microsoft driver package, and rediscover the card to rebuild its defaults. If the card does not return, the tool will try one software reconnection on the verified USB port. All playback and recording endpoints on the card may be interrupted. Reconnection may cause pops, switch your default output, or reset volume. You may need to reconnect the card or restart Windows. Pause playback and lower the volume. Continue with force restore?"],
+  restoreText:["将写回此输出已保存的快照。首次修改前保存的快照可能包含当时的自定义设置；强制恢复后补存的快照包含 Windows 重建时核实的设置。请先暂停播放并降低音量，重启声卡可能中断同卡音频或产生爆音。","Restore this output’s saved snapshot. A snapshot taken before the first change may include earlier custom settings. A snapshot saved after force restore contains the settings verified after Windows rebuilt the output. Pause playback and lower the volume. Restarting the card can interrupt audio or cause pops."],
+  forceText:["请先降低音量，暂停这块声卡的播放和录音。确认后会先检查同卡占用；若仍有占用，请退出使用它的应用，再重新确认。Windows 将卸载此声卡的 USB 音频功能，保留微软驱动包并重建默认设置。原有快照会保留，若所选输出缺少快照，将在重建并核实设置后补存。同卡音频会中断，可能出现爆音、音量重置及默认输出或端点 ID 变化。声卡未返回时，程序最多尝试一次已核对的 USB 端口重连；必要时需手动重插或重启电脑。","Lower the volume and pause playback and recording on this card. After you confirm, the tool checks whether the card is in use. If it is still busy, quit the apps using it and confirm again. Windows will remove the USB audio function, keep the Microsoft driver package and rebuild the defaults. Existing snapshots are kept. If this output has no snapshot, its rebuilt settings are saved once verified. Audio on the card will stop. Pops, a volume reset, or changes to the default output or endpoint ID are possible. If the card does not return, the tool may reconnect its verified USB port once. You may need to reconnect it manually or restart Windows."],
   usb:["USB 音频功能","USB audio function"], affected:["同卡可能受影响的端点","Endpoints that may be interrupted"], targetScope:["目标与范围","Target and scope"],
   operating:["正在处理设备设置","Updating device settings"], operatingText:["正在等待 Windows 重新识别设备并读回设置。返回主界面后，操作仍会继续。","Waiting for Windows to rediscover the device and read back its settings. You can return to the main window while this runs."],
   changed:["输出或格式已变化，本次确认已失效。请重新核对设备。","The output or format changed. Review the device and confirm again."],
@@ -81,7 +82,7 @@ const testBands=["default","seven","current"];
 const roundsPerBand=10;
 const state = {lang:"zh", theme:"dark", accepted:false, initialized:false, devices:[], id:"",offlineId:"", target:3, dirty:false, all:false, hasDir:false,dirPath:"",checkingDir:false,choosingDir:false,
   maximized:false, version:"", diagnosticPath:"", reportRequest:null, reportResult:null,
-  migrationError:"", preferencesError:"", sessionConsent:false, consentError:"", rebuildOffer:null,
+  migrationError:"", preferencesError:"", sessionConsent:false, consentError:"", rebuildOffer:null, forceReceipt:"", missingAfterRebuild:new Set(),
   stamp:null, readsFailed:false, reading:false, notice:"", pending:null, job:null, restartOffer:null, run:null, dialog:null, results:new Map(), lastResult:null};
 const t = key => words[key]?.[state.lang === "en" ? 1 : 0] ?? key;
 const el = (tag, value, cls) => {
@@ -239,12 +240,14 @@ function render() {
   const partial=d && (!positive(d.min) || !positive(d.default) || !positive(d.current) || !positive(d.current_rate));
   $("device-note").textContent=(testOnly ? "" : reason) || (partial ? t("partial") : ""); $("device-note").hidden=!$("device-note").textContent;
   for(const key of ["format","mix"]){$(key).textContent=fmt(d,key==="mix");$(key).title=formatDetails(d,key==="mix");}
-  $("notice").textContent=state.job ? t("operating")+" · "+t("operatingText") : typeof state.notice==="string" ? state.notice : t(state.notice.key);
-  $("notice").hidden=!state.job && !state.notice;
+  const notice=typeof state.notice==="string" ? state.notice : t(state.notice.key);
+  $("notice").textContent=state.job ? t("operating")+" · "+t("operatingText") : [state.forceReceipt,notice].filter(Boolean).join("\n");
+  $("notice").hidden=!$("notice").textContent;
   const permitted=allowed(d) && state.dialog?.kind!=="restart";
   const canApply=permitted && positive(d?.rate) && positive(d?.fundamental) && positive(d?.default) && positive(engineRate(d)) && sliderMax(d)>=.5;
   for(const id of ["apply","slider","one","all"]) $(id).disabled=!canApply;
-  $("restore").disabled=!canRebuild(d);
+  const missingAfterRebuild=state.missingAfterRebuild.has(d?.id);
+  $("restore").disabled=!canRebuild(d) || missingAfterRebuild;
   $("force").disabled=!canRebuild(d);
   $("hard-restart").disabled=!permitted || d?.restart_pending!==true;
   $("hard-restart").title=d?.supported!==true ? t("noSupport") : t("restartHelp");
@@ -253,6 +256,7 @@ function render() {
   $("restore-help").textContent=!isRebuildTarget(d) ? t("noSupport") : fallbackReason(d) ? t("offerRebuild") : "";
   if(isRebuildTarget(d) && d.snapshot!==true && !state.migrationError)
     $("restore-help").textContent=t("noSnapshot")+" "+t("offerRebuild");
+  if(missingAfterRebuild) $("restore-help").textContent=t("rebuiltWithoutSnapshot");
   $("restore").title=$("restore-help").textContent;
   $("bench").textContent=t(state.run?"testing":"test");
   drawTarget(d);drawReadings(d);drawResult(d);
@@ -403,7 +407,8 @@ function startOperation(dialog) {
   if(!permitted || confirmationIdentity(dialog.op,d)!==dialog.identity || (dialog.op==="restore" && fallbackReason(d))) {
     closeDialog();state.notice=t("changed");render();return;
   }
-  const request=dialog.op==="apply" || dialog.op==="restore" ? {id:d.id,requestId:++operationSequence} : {};
+  const request={id:d.id,requestId:++operationSequence};
+  state.forceReceipt="";
   state.job={device:d,op:dialog.op,...request};state.notice="";
   showDialog("operating");render();
   send(dialog.op,{device:d,ms:dialog.ms,all:dialog.all,...request});
@@ -412,6 +417,7 @@ function confirmOp(op,reason="") {
   const d=selected();
   if(op==="apply" ? !allowed(d) : !canRebuild(d)) return;
   if(op==="restore") {
+    if(state.missingAfterRebuild.has(d.id)) return;
     reason=fallbackReason(d);
     if(reason) op="force";
   }
@@ -440,6 +446,8 @@ function matchesRequest(message,request) {
   return !!request && message.id===request.device.id && message.requestId===request.requestId;
 }
 function staleOperation(message) {
+  if(message.op==="force" || state.job?.op==="force")
+    return message.op!=="force" || state.job?.op!=="force" || !matchesRequest(message,state.job);
   if(message.op==="hardRestart" || state.job?.op==="hardRestart")
     return message.op!=="hardRestart" || state.job?.op!=="hardRestart" || !matchesRequest(message,state.job);
   if((message.op==="apply" || message.op==="restore") && message.requestId!==undefined)
@@ -466,7 +474,7 @@ function startRestart(dialog) {
   if(!restartValid(dialog) || !dialog.token || !allowed(selected())) return;
   clearTimeout(dialog.timer);
   const d=selected();
-  state.job={device:d,op:"hardRestart",requestId:dialog.requestId};state.notice="";
+  state.job={device:d,op:"hardRestart",requestId:dialog.requestId};state.notice="";state.forceReceipt="";
   showDialog("operating");render();
   send("hardRestart",{id:d.id,device:d,requestId:dialog.requestId,token:dialog.token});
 }
@@ -519,7 +527,7 @@ function startRun() {
   state.pending=null;
   const requestId=++operationSequence;
   state.run={device:{...d},condition:conditions(d),requestId,done:0,total:testBands.length*roundsPerBand,stage:"prepare",cancelled:false};
-  state.notice="";
+  state.notice="";state.forceReceipt="";
   showDialog("progress");render();
   send("bench",{device:d,requestId});
 }
@@ -740,8 +748,9 @@ function receiveError(message) {
     }
     return;
   }
-  const hadJob=!!state.job;
+  const hadJob=!!state.job, forceFailed=state.job?.op==="force";
   if(hadJob) {
+    if(forceFailed) state.forceReceipt=error;
     rememberFailedRestore(message);
     if(state.dialog?.kind==="operating") closeDialog();
     const old=state.results.get(state.job.device.id);if(old) old.invalid=true;
@@ -753,7 +762,7 @@ function receiveError(message) {
     state.rebuildOffer=null;
     if(state.dialog?.kind==="restart") cancelRestart(state.dialog);
     state.notice=t("retryRead")+" "+error;
-  } else state.notice=error;
+  } else state.notice=forceFailed ? "" : error;
   render();
   if(hadJob && !state.reading) refresh();
 }
@@ -831,7 +840,18 @@ window.onNative=message=>{
           message.op===state.job?.op && matchesRequest(message,state.job))
         state.restartOffer=formatKey(state.job.device);
       if(state.job) {const record=state.results.get(state.job.device.id);if(record) record.invalid=true;}
+      if(message.ok===true && message.op==="apply" && matchesRequest(message,state.job))
+        state.missingAfterRebuild.delete(message.id);
       state.job=null;state.notice=message.message || t(message.ok?"done":"opError");
+      if(message.op==="force") {
+        state.forceReceipt=state.notice;state.notice="";
+        if(message.ok===true && message.returnedId) {
+          state.id=message.returnedId;state.offlineId=message.returnedId;
+          if(message.snapshotStatus==="unavailable") state.missingAfterRebuild.add(message.returnedId);
+          else if(message.snapshotStatus==="saved" || message.snapshotStatus==="preserved")
+            state.missingAfterRebuild.delete(message.returnedId);
+        }
+      }
       if(state.dialog?.kind==="operating") closeDialog();
       state.dirty=false;refresh();render();break;
   }
@@ -842,6 +862,7 @@ $("about").onclick=()=>showDialog("about");
 for(const lang of ["zh","en"]) $(lang).onclick=()=>setLanguage(lang);
 for(const theme of ["dark","light"]) $(theme).onclick=()=>{state.theme=theme;setPrefs();render();};
 $("output").onchange=()=>{
+  state.forceReceipt="";
   state.restartOffer=null;
   state.rebuildOffer=null;
   if(state.dialog?.kind==="restart") cancelRestart(state.dialog);

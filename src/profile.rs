@@ -1,3 +1,4 @@
+mod activity;
 mod capability;
 #[cfg(test)]
 mod compatibility_tests;
@@ -8,6 +9,7 @@ mod native;
 mod port;
 mod store;
 
+pub use activity::force_blocked_message;
 pub use store::migrate_legacy_snapshots;
 
 use crate::devices::{self, Endpoint};
@@ -539,9 +541,93 @@ fn rebuilt_range_report(v: &Endpoint) -> String {
     }
 }
 
-fn force(e: &Endpoint) -> Result<String> {
+pub struct ForceResult {
+    pub endpoint: Endpoint,
+    pub message: String,
+    pub snapshot_status: &'static str,
+}
+
+fn read_rebuilt_snapshot(
+    before: &Endpoint,
+    returned: &Endpoint,
+    unique_before: bool,
+) -> Result<(Endpoint, Vec<u8>, Vec<u8>)> {
+    let outputs = devices::list_for_rebuild()?;
+    let e = returned_output(before, &outputs, unique_before)?;
+    if !returned.id.eq_ignore_ascii_case(&e.id) || returned.arrival != e.arrival {
+        return Err("已返回的端点或 USB 连接又发生了变化。".into());
+    }
+    if !e.supported {
+        return Err(format!("输出的格式或共享周期尚未就绪。{}", e.reason));
+    }
+    let raw = check_format(e)?;
+    let arrival = native::arrival(&e.physical_id)?;
+    let (current, registry) = native::read(e)?;
+    if capability::active(&current, &raw)? != range(e) {
+        return Err("重建后的能力记录与 Windows 公布范围尚未一致。".into());
+    }
+    let checked = devices::get_for_rebuild(&e.id)?;
+    if !devices::matches_target(e, &checked)
+        || !devices::matches_rebuild_target(e, &checked)
+        || range(e) != range(&checked)
+    {
+        return Err("读取重建快照期间，设备身份、格式或公布周期发生了变化。".into());
+    }
+    let (again, persisted) = native::read(&checked)?;
+    native::verify_preimage(&current, &registry, &again, &persisted)?;
+    if native::arrival(&e.function_id)? != e.arrival || native::arrival(&e.physical_id)? != arrival
+    {
+        return Err("读回期间 USB 连接发生了变化。".into());
+    }
+    Ok((checked, current, registry))
+}
+
+fn removal_failure(
+    error: &str,
+    present: Result<bool>,
+    original_output_online: impl FnOnce() -> bool,
+) -> String {
+    let advice = match present {
+        Ok(false) => "原 USB 音频功能目前不在场。请稍候刷新，如果声卡仍未返回，请重新插拔声卡或重启电脑。".to_owned(),
+        Ok(true) if original_output_online() => "原 USB 音频功能和所选输出目前仍在线。请关闭使用这块声卡的程序，刷新并核对输出后再决定是否重试。".to_owned(),
+        Ok(true) => "原 USB 音频功能仍在场，所选输出的原连接状态尚未核实。请稍候刷新，如果声卡仍不可用，请重新插拔声卡或重启电脑。".to_owned(),
+        Err(reason) => format!("当前 USB 音频功能状态也未能核实。{reason} 请稍候刷新，如果声卡仍不可用，请重新插拔声卡或重启电脑。"),
+    };
+    format!("{error} {advice}")
+}
+
+const REMOVE_REBOOT: (&str, &str) = (
+    "卸载所选 USB 音频功能返回 3010。Windows 已接受操作，需要重启电脑才能完成。请先保存工作，重启 Windows 后刷新并核对所选输出。",
+    "Removing the selected USB audio function returned 3010. Windows accepted the operation and requires a restart to complete it. Save your work, restart Windows, then refresh and check the selected output.",
+);
+const SCAN_REBOOT: (&str, &str) = (
+    "卸载所选 USB 音频功能返回 0，随后定向扫描返回 3010。Windows 已接受扫描，需要重启电脑才能完成。请先保存工作，重启 Windows 后刷新并核对所选输出。",
+    "Removing the selected USB audio function returned 0. The subsequent targeted scan returned 3010. Windows accepted the scan and requires a restart to complete it. Save your work, restart Windows, then refresh and check the selected output.",
+);
+
+pub fn force_reboot_message(error: &str, en: bool) -> Option<String> {
+    [REMOVE_REBOOT, SCAN_REBOOT]
+        .into_iter()
+        .find(|(zh, _)| error == *zh)
+        .map(|(zh, english)| if en { english } else { zh }.to_owned())
+}
+
+fn stop_on_required_reboot(result: &Result<u32>, message: (&str, &str)) -> Result<()> {
+    if matches!(result, Ok(3010)) {
+        return Err(message.0.into());
+    }
+    Ok(())
+}
+
+fn force(e: &Endpoint) -> Result<ForceResult> {
     let previous = native::settings(e).ok();
     let old_outputs = devices::list_for_rebuild()?;
+    if !old_outputs
+        .iter()
+        .any(|v| devices::matches_rebuild_target(e, v))
+    {
+        return Err("无法在操作前的活动输出中再次核对所选端点，请刷新后重试。".into());
+    }
     let unique_before = old_outputs.iter().filter(|v| same_connector(e, v)).count() == 1;
     let physical_arrival = native::arrival(&e.physical_id)?;
     let port = port::target(e);
@@ -553,17 +639,38 @@ fn force(e: &Endpoint) -> Result<String> {
     if native::arrival(&e.physical_id)? != physical_arrival {
         return Err("物理 USB 连接已改变。".into());
     }
-    let code = native::scoped_command(&["/remove-device", &checked.function_id])?;
-    if code != 0 && code != 3010 {
-        return Err(format!(
-            "卸载所选 USB 音频功能返回 {code}，设备状态待复核。"
-        ));
+    activity::require_idle(&checked)?;
+    if native::arrival(&checked.function_id)? != checked.arrival
+        || native::arrival(&checked.physical_id)? != physical_arrival
+    {
+        return Err("核对音频占用期间 USB 连接已改变，请刷新并重新确认。".into());
     }
+    let command = native::scoped_command(&["/remove-device", &checked.function_id]);
+    stop_on_required_reboot(&command, REMOVE_REBOOT)?;
+    let code = match command {
+        Ok(0) => 0,
+        other => {
+            let error = match other {
+                Ok(code) => format!("卸载所选 USB 音频功能返回 {code}。"),
+                Err(reason) => format!("卸载所选 USB 音频功能时未取得返回码。{reason}"),
+            };
+            return Err(removal_failure(
+                &error,
+                native::function_present(&checked.function_id),
+                || {
+                    native::arrival(&checked.physical_id) == Ok(physical_arrival)
+                        && fresh_rebuild(&checked).is_ok()
+                },
+            ));
+        }
+    };
     let mut scan_note = String::new();
     if !e.physical_id.eq_ignore_ascii_case(&e.function_id)
         && native::arrival(&e.physical_id) == Ok(physical_arrival)
     {
-        match native::scoped_command(&["/scan-devices", "/instanceid", &e.physical_id]) {
+        let scan = native::scoped_command(&["/scan-devices", "/instanceid", &e.physical_id]);
+        stop_on_required_reboot(&scan, SCAN_REBOOT)?;
+        match scan {
             Ok(0) => {}
             Ok(code) => scan_note = format!("定向扫描返回 {code}。"),
             Err(err) => scan_note = err,
@@ -573,7 +680,7 @@ fn force(e: &Endpoint) -> Result<String> {
     let mut deadline = began + Duration::from_secs(16);
     let mut fallback = Some(port);
     loop {
-        let attempt = (|| {
+        let attempt: Result<Endpoint> = (|| {
             let outputs = devices::list_for_rebuild()?;
             let v = returned_output(e, &outputs, unique_before)?;
             if v.arrival == 0 || v.arrival == e.arrival && v.id.eq_ignore_ascii_case(&e.id) {
@@ -582,19 +689,48 @@ fn force(e: &Endpoint) -> Result<String> {
             native::started(&v.physical_id)?;
             native::started(&v.function_id)?;
             native::started(&format!(r"SWD\MMDEVAPI\{}", v.id))?;
-            let readback = rebuilt_range_report(v);
+            Ok(v.clone())
+        })();
+        if let Ok(mut returned) = attempt {
+            // PnP can finish before the audio engine and registry publish the
+            // new table. Once the output is back, only retry read-only probes.
+            let deadline = Instant::now() + Duration::from_secs(12);
+            let saved = loop {
+                match read_rebuilt_snapshot(e, &returned, unique_before) {
+                    Ok((verified, current, registry)) => {
+                        returned = verified;
+                        break store::save_rebuilt(&returned, current, registry);
+                    }
+                    Err(err) if Instant::now() >= deadline => break Err(err),
+                    Err(_) => thread::sleep(Duration::from_millis(400)),
+                }
+            };
+            let (snapshot_status, snapshot_report) = match saved {
+                Ok(store::RebuiltSnapshot::Saved) => (
+                    "saved",
+                    "已保存并读回 Windows 重建后的默认设置快照。".into(),
+                ),
+                Ok(store::RebuiltSnapshot::Preserved) => (
+                    "preserved",
+                    "已核对并保留本机已有的首次快照，可用于普通恢复。".into(),
+                ),
+                Err(err) => ("unavailable", format!("普通恢复快照未能就绪。{err}")),
+            };
+            let readback = rebuilt_range_report(&returned);
             let comparison = previous
                 .as_ref()
-                .zip(native::settings(v).ok().as_ref())
-                .map(|(old, new)| old.report(new, &e.id, &v.id))
+                .zip(native::settings(&returned).ok().as_ref())
+                .map(|(old, new)| old.report(new, &e.id, &returned.id))
                 .unwrap_or_else(|| "默认播放角色、音量及静音未能完整对照。".into());
-            Ok(format!(
-                "Windows 已重新识别 {}，微软 USB 音频驱动 {}。{readback}{comparison}",
-                v.name, v.driver_version
-            ))
-        })();
-        if attempt.is_ok() {
-            return attempt.map(|message| format!("{message}{scan_note}"));
+            let message = format!(
+                "Windows 已重新识别 {}，微软 USB 音频驱动 {}。{snapshot_report}{readback}{comparison}{scan_note}",
+                returned.name, returned.driver_version
+            );
+            return Ok(ForceResult {
+                endpoint: returned,
+                message,
+                snapshot_status,
+            });
         }
         if began.elapsed() >= Duration::from_secs(5)
             && let Some(port) = fallback.take()
@@ -619,6 +755,12 @@ fn force(e: &Endpoint) -> Result<String> {
     }
 }
 
+pub fn run_force(expected: &Endpoint) -> Result<ForceResult> {
+    let _operation = native::Operation::lock()?;
+    let _apartment = native::Apartment::enter()?;
+    force(&fresh_rebuild(expected)?)
+}
+
 pub fn run(action: &str, expected: &Endpoint, ms: f64, all: bool) -> Result<String> {
     run_with_restart_offer(action, expected, ms, all, &mut false)
 }
@@ -631,11 +773,11 @@ pub fn run_with_restart_offer(
     offer: &mut bool,
 ) -> Result<String> {
     *offer = false;
+    if action == "force" {
+        return run_force(expected).map(|r| r.message);
+    }
     let _operation = native::Operation::lock()?;
     let _apartment = native::Apartment::enter()?;
-    if action == "force" {
-        return force(&fresh_rebuild(expected)?);
-    }
     let e = fresh(expected)?;
     if expected.siblings != e.siblings {
         return Err("同卡设备列表在确认后发生了变化。".into());
@@ -656,6 +798,33 @@ pub fn run_with_restart_offer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_reboot_receipt_stops_both_remove_and_scan_before_reconnect_or_snapshot() {
+        for message in [REMOVE_REBOOT, SCAN_REBOOT] {
+            let mut continued = false;
+            let result = stop_on_required_reboot(&Ok(3010), message).map(|()| continued = true);
+            let error = result.unwrap_err();
+            assert!(!continued);
+            assert!(error.contains("3010") && error.contains("重启 Windows"));
+            assert_eq!(force_reboot_message(&error, true).unwrap(), message.1);
+            assert!(force_blocked_message(&error, false).is_none());
+            for other in [Ok(0), Ok(5), Err("no exit code".into())] {
+                assert!(stop_on_required_reboot(&other, message).is_ok());
+            }
+        }
+        assert!(force_reboot_message("设备目前仍在线。", true).is_none());
+    }
+
+    #[test]
+    fn a_remove_error_reports_the_actual_code_and_observed_device_state() {
+        let error = "卸载所选 USB 音频功能返回 9876。";
+        let online = removal_failure(error, Ok(true), || true);
+        assert!(online.contains("9876") && online.contains("所选输出目前仍在线"));
+        assert!(removal_failure(error, Ok(true), || false).contains("原连接状态尚未核实"));
+        assert!(removal_failure(error, Ok(false), || panic!()).contains("目前不在场"));
+        assert!(removal_failure(error, Err("CM 0x42".into()), || panic!()).contains("CM 0x42"));
+    }
+
     #[test]
     fn old_win10_journal_requires_the_entire_persisted_candidate() {
         let (original, registry) = compatibility_tests::win10_capture();

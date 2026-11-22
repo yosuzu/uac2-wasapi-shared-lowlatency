@@ -481,9 +481,16 @@ impl Controller {
                     request_id
                 }
                 .to_owned();
-                let rebuilt = self.rebuilt.take().filter(|e| e.id == wanted);
-                self.selected = if let Some(before) = rebuilt {
-                    profile::rediscover(&before, &self.shown, &items).unwrap_or_default()
+                let rebuilt = self
+                    .rebuilt
+                    .take()
+                    .filter(|e| e.id == wanted || self.selected == wanted);
+                self.selected = if let Some(returned) = rebuilt {
+                    items
+                        .iter()
+                        .find(|d| devices::matches_rebuild_target(&returned, d))
+                        .map(|d| d.id.clone())
+                        .unwrap_or_default()
                 } else if wanted.is_empty() && op == "list" {
                     items.first().map(|d| d.id.clone()).unwrap_or_default()
                 } else {
@@ -559,13 +566,38 @@ impl Controller {
                 json!({"type":"operation","op":op,"id":target.id,"requestId":pending.request_id,
                     "ok":result.is_ok(),"message":result.unwrap_or_else(|err|err)})
             }
-            "apply" | "restore" | "force" => {
+            "force" => {
                 self.restart = None;
-                let target = if op == "force" {
-                    self.target(m, devices::matches_rebuild_target, false)?
-                } else {
-                    self.target(m, devices::matches_target, true)?
+                self.rebuilt = None;
+                let target = self.target(m, devices::matches_rebuild_target, false)?;
+                let en = self.prefs.lang == "en";
+                let result = profile::run_force(&target);
+                let mut reply = json!({"type":"operation","op":op,"id":target.id,
+                    "requestId":m["requestId"],"ok":result.is_ok()});
+                let receipt = match result {
+                    Ok(restored) => {
+                        reply["returnedId"] = json!(restored.endpoint.id);
+                        reply["snapshotStatus"] = json!(restored.snapshot_status);
+                        reply["message"] = json!(crate::emergency::force_summary(&restored, en));
+                        self.rebuilt = Some(restored.endpoint);
+                        Ok(restored.message)
+                    }
+                    Err(reason) => {
+                        reply["message"] = json!(crate::emergency::force_error(reason.clone(), en));
+                        Err(reason)
+                    }
                 };
+                uac2_control::diagnostics::remember_operation(
+                    self.rebuilt.as_ref().unwrap_or(&target),
+                    op,
+                    &receipt,
+                    false,
+                );
+                reply
+            }
+            "apply" | "restore" => {
+                self.restart = None;
+                let target = self.target(m, devices::matches_target, true)?;
                 let ms = m["ms"].as_f64().unwrap_or(0.0);
                 if op == "apply" && (!ms.is_finite() || !(0.5..=10.0).contains(&ms)) {
                     return Err("无效的最小周期。".into());
@@ -579,9 +611,6 @@ impl Controller {
                     &mut offer_restart,
                 );
                 uac2_control::diagnostics::remember_operation(&target, op, &result, offer_restart);
-                if op == "force" && result.is_ok() {
-                    self.rebuilt = Some(target.clone());
-                }
                 json!({"type":"operation","op":op,"id":target.id,"requestId":m["requestId"],
                     "ok":result.is_ok(),"offerRestart":offer_restart,"message":result.unwrap_or_else(|e|e)})
             }

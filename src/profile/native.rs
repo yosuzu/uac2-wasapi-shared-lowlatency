@@ -21,7 +21,7 @@ use windows::{
     core::{GUID, HSTRING, w},
 };
 
-fn err(e: windows::core::Error) -> String {
+pub(super) fn err(e: windows::core::Error) -> String {
     format!("Windows 0x{:08X} ({})", e.code().0 as u32, e.message())
 }
 
@@ -85,7 +85,7 @@ const CONTAINER: PROPERTYKEY = PROPERTYKEY {
     pid: 2,
 };
 
-fn enumerator() -> Result<IMMDeviceEnumerator> {
+pub(super) fn enumerator() -> Result<IMMDeviceEnumerator> {
     unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }.map_err(err)
 }
 
@@ -293,14 +293,21 @@ pub(super) fn check_test_volume(e: &Endpoint, expected: (i32, bool)) -> Result<(
     }
     Ok(())
 }
-fn locate(id: &str) -> Result<u32> {
+fn present_node(id: &str) -> Result<Option<u32>> {
     let mut node = 0;
     let code =
         unsafe { CM_Locate_DevNodeW(&mut node, &HSTRING::from(id), CM_LOCATE_DEVNODE_NORMAL) };
-    if code != CR_SUCCESS {
-        return Err(format!("无法定位设备实例（CM {}）。", code.0));
+    match code {
+        CR_SUCCESS => Ok(Some(node)),
+        CR_NO_SUCH_DEVNODE => Ok(None),
+        _ => Err(format!("无法定位设备实例（CM {}）。", code.0)),
     }
-    Ok(node)
+}
+fn locate(id: &str) -> Result<u32> {
+    present_node(id)?.ok_or_else(|| format!("无法定位设备实例（CM {}）。", CR_NO_SUCH_DEVNODE.0))
+}
+pub(super) fn function_present(id: &str) -> Result<bool> {
+    Ok(present_node(id)?.is_some())
 }
 pub(super) fn started(id: &str) -> Result<()> {
     let node = locate(id)?;

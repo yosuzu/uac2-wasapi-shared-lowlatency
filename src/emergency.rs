@@ -26,6 +26,41 @@ enum Reply {
     Finished(Result<String, String>),
 }
 
+pub(crate) fn force_summary(result: &profile::ForceResult, en: bool) -> String {
+    if !en {
+        return result.message.clone();
+    }
+    let snapshot = match result.snapshot_status {
+        "saved" => {
+            "The rebuilt settings were verified and saved as this output’s recovery snapshot."
+        }
+        "preserved" => "The existing recovery snapshot was verified and kept.",
+        _ => {
+            "The recovery snapshot could not be verified or saved. Review the details below. You can generate a report from Diagnostic probe in the main window."
+        }
+    };
+    format!(
+        "Windows rediscovered {}. {snapshot} Check your default output and volume before you resume playback.\n\nTechnical details as reported:\n{}",
+        result.endpoint.name, result.message
+    )
+}
+
+pub(crate) fn force_error(error: String, en: bool) -> String {
+    if let Some(message) = profile::force_blocked_message(&error, en) {
+        return message;
+    }
+    if let Some(message) = profile::force_reboot_message(&error, en) {
+        return message;
+    }
+    if en {
+        format!(
+            "Recovery did not finish. Refresh the devices and check which outputs Windows shows before taking further action.\n{error}"
+        )
+    } else {
+        format!("恢复未完成。请先刷新设备，核对 Windows 中可用的播放输出。\n{error}")
+    }
+}
+
 struct Recovery<'a> {
     window: Window,
     reason: &'a str,
@@ -54,11 +89,11 @@ impl Recovery<'_> {
             Screen::Select => (t("选择要恢复的声卡","Select a device to restore"), t("选择已核对的播放输出，然后查看恢复操作的影响。","Choose a verified playback output to review the recovery action.").to_owned(),t("取消","Cancel"),t("查看恢复确认","Review recovery")),
             Screen::Confirm => {
                 let d = &self.devices[self.choice.expect("confirmation requires an explicit selection")];
-                let risk = t("请先暂停播放并降低音量。Windows 将卸载这块声卡的 USB 音频功能，再用已安装的微软驱动重建默认设置。同卡播放和录音都会中断，可能出现爆音、音量重置或默认输出切换。如果声卡未返回，程序可能尝试一次已核对的 USB 端口重连。必要时需重新插拔或重启电脑。", "Pause playback and lower the volume. Windows will remove this card’s USB audio function and rebuild its defaults using the installed Microsoft driver. Playback and recording will stop. Pops, a volume reset or a change of default output are possible. If the card does not return, the tool may reconnect its verified USB port once. You may need to reconnect the card manually or restart Windows.");
+                let risk = t("请降低音量，暂停这块声卡的播放和录音。确认后会先检查同卡占用；若仍有占用，请退出使用它的应用，再重新确认。Windows 将卸载此声卡的 USB 音频功能，保留微软驱动包并重建默认设置。原有快照会保留，若所选输出缺少快照，将在重建并核实设置后补存。同卡音频会中断，可能出现爆音、音量重置及默认输出或端点 ID 变化。声卡未返回时，程序最多尝试一次已核对的 USB 端口重连；必要时需手动重插或重启电脑。", "Lower the volume and pause playback and recording on this card. After you confirm, the tool checks whether the card is in use. If it is still busy, quit the apps using it and confirm again. Windows will remove the USB audio function, keep the Microsoft driver package and rebuild the defaults. Existing snapshots are kept. If this output has no snapshot, its rebuilt settings are saved once verified. Audio on the card will stop. Pops, a volume reset, or changes to the default output or endpoint ID are possible. If the card does not return, the tool may reconnect its verified USB port once. You may need to reconnect it manually or restart Windows.");
                 (t("确认强制恢复","Confirm force restore"),format!("{}\r\n{}\r\n{}\r\n\r\n{}",d.name,d.function_id,d.id,risk),t("返回","Back"),t("确认强制恢复","Confirm force restore"))
             }
             Screen::Working => (t("正在恢复设备","Restoring the device"), t("正在等待 Windows 重新识别声卡并核对结果。完成后即可关闭窗口。","Waiting for Windows to rediscover the card and verify the result. You can close this window when the operation finishes.").to_owned(), "", ""),
-            Screen::Result => (if self.failed {t("恢复未完成","Recovery incomplete")} else {t("恢复结果","Recovery result")},self.result.clone(),t("关闭","Close"),""),
+            Screen::Result => (if self.failed {t("恢复未完成","Recovery incomplete")} else {t("恢复结果","Recovery result")},self.result.clone(),t("关闭","Close"),if self.failed {t("刷新设备","Refresh devices")} else {""}),
         };
         self.window.show_page(
             heading,
@@ -93,7 +128,8 @@ impl Recovery<'_> {
 
     fn advance(&mut self) {
         match self.screen {
-            Screen::Intro => {
+            Screen::Intro | Screen::Result if self.screen == Screen::Intro || self.failed => {
+                self.choice = None;
                 self.screen = Screen::Finding;
                 self.render();
                 self.run_worker(|| Reply::Devices(devices::list_for_rebuild()));
@@ -114,14 +150,16 @@ impl Recovery<'_> {
                 );
                 self.screen = Screen::Working;
                 self.render();
+                let en = self.en;
                 self.run_worker(move || {
-                    Reply::Finished((|| {
+                    let result = (|| {
                         let fresh = devices::get_for_rebuild(&d.id)?;
                         if !devices::matches_rebuild_target(&d, &fresh) {
                             return Err(changed.to_owned());
                         }
-                        profile::run("force", &fresh, 0.0, false)
-                    })())
+                        profile::run_force(&fresh).map(|result| force_summary(&result, en))
+                    })();
+                    Reply::Finished(result.map_err(|error| force_error(error, en)))
                 });
             }
             _ => {}

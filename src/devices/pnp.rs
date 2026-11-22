@@ -149,6 +149,27 @@ fn children(parent: u32, prefix: &str) -> Result<Vec<(u32, String)>, String> {
     Ok(result)
 }
 
+/// A composite USB card can expose playback and recording on different functions.
+pub(crate) fn card_audio_endpoints(physical_id: &str) -> Result<Vec<String>, String> {
+    const PREFIX: &str = r"SWD\MMDEVAPI\";
+    let mut parents = vec![locate(physical_id)?];
+    let mut visited = std::collections::HashSet::new();
+    let mut ids = Vec::new();
+    while let Some(node) = parents.pop() {
+        if !visited.insert(node) {
+            return Err("枚举声卡端点时设备树发生变化。".into());
+        }
+        for (child, id) in children(node, "")? {
+            if id.to_ascii_uppercase().starts_with(PREFIX) {
+                ids.push(id[PREFIX.len()..].to_owned());
+            } else {
+                parents.push(child);
+            }
+        }
+    }
+    Ok(ids)
+}
+
 fn read_property(
     expected: DEVPROPTYPE,
     query: impl Fn(&mut DEVPROPTYPE, Option<*mut u8>, &mut u32) -> CONFIGRET,

@@ -125,6 +125,26 @@ pub(super) fn active(bytes: &[u8], raw: &[u8]) -> Result<Range, String> {
     }
 }
 
+/// A regenerated table can be adopted into an existing restore journal only
+/// when the full set of rows differs only by row order or known PCM minima.
+pub(super) fn same_except_minima(original: &[u8], rebuilt: &[u8]) -> Result<bool, String> {
+    fn normalized_rows(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        let mut normalized = Vec::new();
+        for row in parse(bytes)? {
+            let start = row.offset - 8;
+            let mut whole = bytes[start..start + 20 + row.raw.len()].to_vec();
+            if row.eligible {
+                whole[8..12].fill(0);
+            }
+            normalized.push(whole);
+        }
+        normalized.sort_unstable();
+        Ok(normalized)
+    }
+    Ok(original.get(..28) == rebuilt.get(..28)
+        && normalized_rows(original)? == normalized_rows(rebuilt)?)
+}
+
 pub(super) struct Candidate {
     pub bytes: Vec<u8>,
     pub rates: BTreeSet<u32>,
@@ -202,6 +222,44 @@ mod tests {
     use serde_json::Value;
     fn fixtures() -> Vec<Value> {
         serde_json::from_str(include_str!("fixtures/capabilities.json")).unwrap()
+    }
+
+    #[test]
+    fn rebuilt_tables_accept_reordered_rows_and_minima_but_preserve_duplicate_and_opaque_rows() {
+        let f = &fixtures()[0];
+        let original = hex(f["original"].as_str().unwrap()).unwrap();
+        let candidate = hex(f["candidate"].as_str().unwrap()).unwrap();
+        let split = |blob: &[u8]| {
+            parse(blob)
+                .unwrap()
+                .into_iter()
+                .map(|r| {
+                    let start = r.offset - 8;
+                    blob[start..start + 20 + r.raw.len()].to_vec()
+                })
+                .collect::<Vec<_>>()
+        };
+        let assemble = |rows: &[Vec<u8>]| {
+            let mut b = original[..28].to_vec();
+            b[24..28].copy_from_slice(&(rows.len() as u32).to_le_bytes());
+            b.extend(rows.concat());
+            b
+        };
+        let mut rows = split(&candidate);
+        rows.reverse();
+        let reordered = assemble(&rows);
+        assert!(same_except_minima(&original, &reordered).unwrap());
+        rows[1] = rows[0].clone();
+        assert!(!same_except_minima(&original, &assemble(&rows)).unwrap());
+
+        let mut opaque = split(&original)[0].clone();
+        opaque[20..22].copy_from_slice(&3u16.to_le_bytes()); // Float row is read-only.
+        let base = assemble(&[opaque.clone()]);
+        for offset in [8, 16] {
+            let mut changed = opaque.clone();
+            changed[offset] ^= 1;
+            assert!(!same_except_minima(&base, &assemble(&[changed])).unwrap());
+        }
     }
 
     #[test]
