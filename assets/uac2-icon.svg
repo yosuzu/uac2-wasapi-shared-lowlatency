@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">UAC2 shared period</title>
+  <rect x="8" y="8" width="240" height="240" rx="55" fill="#434853"/>
+  <rect x="11" y="11" width="234" height="234" rx="52" fill="#20232B"/>
+  <g fill="#36EFE1">
+    <polygon points="62,88 166,88 146,120 42,120"/>
+    <polygon points="92,144 208,144 188,176 72,176"/>
+  </g>
+  <rect x="176" y="64" width="32" height="32" fill="#FF4F9C"/>
+</svg>

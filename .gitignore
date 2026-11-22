@@ -1,0 +1,8 @@
+/target/
+/dist/*
+!/dist/UAC2-Control.exe
+/UAC2-Control.exe
+UAC2-Data/
+uac2-data/
+/win10test/
+/node_modules/
